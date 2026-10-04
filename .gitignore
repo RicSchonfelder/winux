@@ -1,0 +1,6 @@
+src/
+out/
+iso/
+artifacts/
+*.iso
+build/config/.config.generated

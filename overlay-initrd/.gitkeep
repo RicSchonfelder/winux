@@ -1,0 +1,2 @@
+# overlay-initrd/ — (reservado) init custom do initramfs, se necessario.
+# O Winux usa initramfs-tools do Debian por padrao (mais simples).
