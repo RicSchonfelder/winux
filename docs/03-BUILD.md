@@ -31,14 +31,20 @@ out/winux-<ver>.iso     ISO UEFI bootável (live, squashfs)
 ## Teste no QEMU
 
 ```bash
-build/scripts/60-qemu-test.sh
+build/scripts/61-qemu-smoke.sh 300   # headless: boota kernel+initrd por serial
+build/scripts/60-qemu-test.sh        # interativo (janela)
 ```
 
-> No WSL2 normalmente não há `/dev/kvm` → QEMU roda em TCG (lento, mas serve
-> como smoke-test de boot). O ISO é UEFI (OVMF).
+> O `61-qemu-smoke.sh` é o teste confiável: verifica se o ISO chega ao
+> `login:` no serial. No WSL2 normalmente não há `/dev/kvm` → QEMU roda em
+> TCG (lento, mas válido como smoke-test). UEFI via OVMF (carregado como
+> `pflash`, não `-bios`).
 
 ## Otimizações ativas
 
 - `KCFLAGS="-march=haswell -mtune=haswell -O2"` (AVX2).
-- Fragmento `haswell-desktop.fragment`: governor `performance`, preempt de
-  baixa latência, `HZ=1000`, io_uring, NVMe, BTRFS/XFS, `nouveau` off.
+- Config do kernel: `make defconfig` (base sanada p/ desktop — `tinyconfig`
+  não serve para Debian/systemd/XFCE, faltaria PRINTK/SYSFS/ELF/CGROUPS) +
+  merge do fragmento `haswell-desktop.fragment` + `olddefconfig`.
+- Fragmento: governor `performance`, preempt de baixa latência, `HZ=1000`,
+  io_uring, NVMe builtin, BTRFS/XFS, squashfs/overlay (live), `nouveau` off.
