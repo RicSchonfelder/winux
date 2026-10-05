@@ -1,121 +1,166 @@
 #!/bin/sh
-# 70-dualboot.sh - instalador do Winux no disco alvo (rodar do live ISO)
+# winux-install - instala o Winux no disco alvo a partir do SISTEMA LIVE.
+# Uso:  winux-install /dev/nvmeXnY [--yes]
 #
-# USO:
-#   70-dualboot.sh /dev/nvme0n1          # dry-run (mostra o plano)
-#   70-dualboot.sh /dev/nvme0n1 --yes    # executa
-#
-# PRE-CONDICOES (feitas pelo usuario no Windows, com comando explicito):
-#   1. D: movido para E:/F: (iCloud/Steam/etc.)
-#   2. Disco alvo LIBERADO (pode ainda estar MBR com particao D: antiga)
-# O Windows (disco Kingston, ESP proprio) NAO e tocado: apenas leitura
-# p/ localizar o bootmgfw.efi e fazer chainload no GRUB.
+# Seguro por padrao: sem --yes apenas mostra o plano (dry-run).
+# NUNCA toca no disco do Windows: apenas LE o ESP do Windows para
+# montar o menu (chainload). GRUB vai so no ESP do alvo.
 set -e
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-. "$ROOT/build/config/build.conf"
 
-TARGET="$1"; [ -n "$TARGET" ] || { echo "uso: $0 /dev/nvme0n1 [--yes]"; exit 1; }
-YES=0; [ "$2" = "--yes" ] && YES=1
+KVER="$(uname -r)"
+TARGET="$1"
+YES=0
+[ "$2" = "--yes" ] && YES=1
 
-# --- guardas de seguranca ---
-[ -b "$TARGET" ] || { echo "ERRO: $TARGET nao e um block device"; exit 1; }
-echo "$TARGET" | grep -q '/dev/nvme' || { echo "ERRO: alvo deve ser NVMe (o disco dedicado do Winux)"; exit 1; }
+LOGF=/tmp/win-install.log
+die() { echo "ERRO: $*"; echo "ERRO: $*" >> "$LOGF" 2>/dev/null; exit 1; }
+log() { echo ">> $*"; echo ">> $*" >> "$LOGF" 2>/dev/null; }
 
-# nao pode ser o disco onde o proprio sistema ao vivo esta rodando
-BOOTDEV="$(lsblk -no PKNAME "$(findmnt -no SOURCE /)")"
-[ "$BOOTDEV" = "$(basename "$TARGET")" ] && { echo "ERRO: alvo e o disco de boot atual"; exit 1; }
+[ -n "$TARGET" ] || die "uso: $0 /dev/nvmeXnY [--yes]"
+[ -b "$TARGET" ] || die "$TARGET nao e um block device"
+echo "$TARGET" | grep -q '^/dev/nvme' || die "o alvo deve ser um NVMe (disco dedicado do Winux)"
+[ -d /sys/firmware/efi ] || die "o live nao esta em modo UEFI"
 
-# nao pode ter particao montada
-mount | grep -q "$TARGET" && { echo "ERRO: alvo tem particao montada"; exit 1; }
+# nao pode ser o disco de boot do live
+ROOTSRC="$(findmnt -no SOURCE / || true)"
+if [ -n "$ROOTSRC" ]; then
+    PK="$(lsblk -no PKNAME "$ROOTSRC" 2>/dev/null | head -1)"
+    [ -n "$PK" ] && [ "$TARGET" = "/dev/$PK" ] && die "alvo e o disco de boot do live"
+fi
+# nenhuma particao do alvo pode estar montada
+lsblk -no MOUNTPOINT "$TARGET" 2>/dev/null | grep -q . && die "alvo tem particao montada"
+# sanidade de tamanho (evita escolher o disco errado). WINUX_MIN_GB permite
+# lowering em testes (ex.: disco virtual); padrao 200 (o NVMe alvo tem 480GB).
+MIN_GB="${WINUX_MIN_GB:-200}"
+SIZE_GB=$(( $(blockdev --getsize64 "$TARGET") / 1000000000 ))
+[ "$SIZE_GB" -ge "$MIN_GB" ] || die "alvo pequeno demais ($SIZE_GB GB, min $MIN_GB)"
 
 echo "== Plano de instalacao do Winux =="
-echo "   Disco alvo:  $TARGET ($(lsblk -dno SIZE "$TARGET"))"
-echo "   Particoes:   GPT | ESP 512M fat32 | root BTRFS (resto, subvol @)"
+echo "   Disco alvo:  $TARGET ($SIZE_GB GB)"
+echo "   Kernel:      $KVER"
+echo "   Particoes:   GPT | ESP 512M | root BTRFS (subvol @)"
 echo "   Bootloader:  GRUB no ESP do alvo | default=winux | timeout=10"
-echo "   Windows:     chainload do ESP original (so leitura, intocado)"
+echo "   Windows:     chainload (somente leitura; disco original intocado)"
+[ "$YES" = 1 ] || { echo ">> dry-run. Use --yes para executar."; exit 0; }
 
-[ "$YES" = "1" ] || { echo ">> dry-run. Rode com --yes para executar."; exit 0; }
+log "reparticionando (DESTRUTIVO)"
+wipefs -a "$TARGET" 2>/dev/null || true
+# sfdisk pode sair !=0 ao falhar o re-read da tabela (device busy); a tabela
+# ja foi gravada. Ignoramos o exit e re-lendo via partprobe abaixo.
+sfdisk "$TARGET" <<'SFDISK' || true
+label: gpt
+start=1MiB, size=512MiB, type=U
+type=L
+SFDISK
+partprobe "$TARGET" 2>/dev/null || true
+sleep 2
 
-# --- reparticiona o alvo (DESTRUTIVO, so com --yes) ---
-wipefs -a "$TARGET"
-parted -s "$TARGET" mklabel gpt
-parted -s "$TARGET" mkpart ESP fat32 1MiB 513MiB
-parted -s "$TARGET" set 1 esp on
-parted -s "$TARGET" mkpart root 513MiB 100%
+ESP="${TARGET}p1"; ROOTP="${TARGET}p2"
+# espera os nos das particoes aparecerem (devtmpfs)
+i=0
+while [ "$i" -lt 30 ]; do
+    [ -b "$ESP" ] && [ -b "$ROOTP" ] && break
+    partprobe "$TARGET" 2>/dev/null || true
+    sleep 1; i=$((i+1))
+done
+[ -b "$ESP" ]   || die "particao ESP ($ESP) nao apareceu"
+[ -b "$ROOTP" ] || die "particao root ($ROOTP) nao apareceu"
 
-ESP="${TARGET}p1"; ROOT="${TARGET}p2"
-mkfs.vfat -F32 -n WINUX-ESP "$ESP"
-mkfs.btrfs -f -L WINUX "$ROOT"
+mkfs.vfat -F32 -n WINUX-ESP "$ESP" || die "mkfs.vfat falhou"
+# monta o ESP cedo para poder registrar o log da instalacao no disco alvo
+mkdir -p /mnt-esp
+mount "$ESP" /mnt-esp || die "nao montou o ESP"
+LOGF=/mnt-esp/win-install.log
+cp /tmp/win-install.log "$LOGF" 2>/dev/null || true
+mkfs.btrfs -f -L WINUX "$ROOTP" || die "mkfs.btrfs falhou"
 
-# --- subvol @ + mount ---
-mount -t btrfs "$ROOT" /mnt
-btrfs subvolume create /mnt/@
+log "criando subvol @ e montando"
+mount -t btrfs "$ROOTP" /mnt || die "nao montou o root btrfs"
+btrfs subvolume create /mnt/@ || die "nao criou o subvol @"
 umount /mnt
-mount -t btrfs -o subvol=@ "$ROOT" /mnt
+mount -t btrfs -o subvol=@,compress=zstd:1,noatime "$ROOTP" /mnt || die "nao montou o subvol @"
 mkdir -p /mnt/boot/efi
-mount "$ESP" /mnt/boot/efi
+umount /mnt-esp 2>/dev/null || true
+mount "$ESP" /mnt/boot/efi || die "nao montou o ESP em /boot/efi"
 
-# --- copia o rootfs do live para o disco ---
-rsync -a --numeric-ids --exclude '/proc' --exclude '/sys' --exclude '/dev' --exclude '/boot/efi' \
-    /live/ /mnt/ 2>/dev/null || rsync -a --numeric-ids \
-    --exclude '/proc' --exclude '/sys' --exclude '/dev' --exclude '/boot/efi' \
-    /run/live/medium/live/../.. /mnt/ 2>/dev/null || true
-
-# --- fstab por UUID ---
-ROOT_UUID="$(blkid -s UUID -o value "$ROOT")"
-ESP_UUID="$(blkid -s UUID -o value "$ESP")"
-cat > /mnt/etc/fstab <<EOF
-UUID=$ROOT_UUID  /       btrfs  subvol=@,compress=zstd:1,noatime  0 1
-UUID=$ESP_UUID   /boot/efi  vfat  umask=0077                     0 1
-EOF
-
-# --- prepara chroot ---
-mount --bind /proc /mnt/proc
-mount --bind /sys /mnt/sys
-mount --bind /dev /mnt/dev
-mount --bind /run /mnt/run
-
-# --- kernel + modulos + headers p/ DKMS + initramfs + nvidia dentro do alvo ---
-cp "$ROOT/out/bzImage-$KVER" /mnt/boot/vmlinuz-$KVER
-rsync -a "$ROOT/out/modules/lib/modules/" /mnt/lib/modules/
-# headers completos do nosso kernel (DKMS precisa da arvore preparada)
-if [ -d "$ROOT/src/linux-$KVER" ]; then
-    mkdir -p /mnt/usr/src
-    rsync -a --exclude '.git' "$ROOT/src/linux-$KVER/" "/mnt/usr/src/linux-headers-$KVER/"
-    chroot /mnt bash -c "cd /usr/src/linux-headers-$KVER && make modules_prepare ARCH=x86_64 >/dev/null 2>&1 || true"
-    ln -sfn /usr/src/linux-headers-$KVER "/mnt/lib/modules/$KVER/build"
-    ln -sfn /usr/src/linux-headers-$KVER "/mnt/lib/modules/$KVER/source"
-fi
-chroot /mnt bash -c '
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get install -y --no-install-recommends initramfs-tools nvidia-driver nvidia-kernel-dkms efibootmgr
-    dkms autoinstall || true
-    KVER_IMG=$(ls /lib/modules | sort -V | tail -1)
-    mkinitramfs -o /boot/initrd.img-$KVER_IMG $KVER_IMG
-    echo winux > /etc/hostname
-'
-[ -f /mnt/boot/initrd.img-$KVER ] || { echo "ERRO: initramfs nao gerado"; exit 1; }
-
-# --- GRUB no ESP do alvo ---
-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=WINUX --no-nvram
-
-# --- localiza o Windows (ESP original, so leitura) para chainload ---
-WIN_ESP=""
-for d in /dev/sd* /dev/nvme*; do
-    for p in ${d}[0-9]* ${d}p[0-9]*; do
-        [ -e "$p" ] || continue
-        T="$(mktemp -d)"
-        if mount -r "$p" "$T" 2>/dev/null; then
-            if [ -f "$T/EFI/Microsoft/Boot/bootmgfw.efi" ]; then WIN_ESP="$p"; fi
-            umount "$T"
-        fi
-        rmdir "$T" 2>/dev/null || true
-        [ -n "$WIN_ESP" ] && break
-    done
-    [ -n "$WIN_ESP" ] && break
+log "localizando a midia live"
+MEDIUM=""
+for m in /run/live/medium /cdrom /media/sr0 /media/cdrom; do
+    if [ -f "$m/live/filesystem.squashfs" ]; then MEDIUM="$m"; break; fi
 done
 
-# --- grub.cfg: default=winux, timeout=10, chainload Windows ---
+SRC=""
+if [ -n "$MEDIUM" ]; then
+    mkdir -p /mnt-src
+    if mount -o loop,ro "$MEDIUM/live/filesystem.squashfs" /mnt-src 2>/dev/null; then
+        SRC=/mnt-src
+        log "origem = squashfs limpo (em /mnt-src)"
+    fi
+fi
+
+log "copiando o sistema (pode demorar alguns minutos)"
+FROM="${SRC:-/}"
+set +e
+rsync -aHAX --numeric-ids \
+    --exclude '/proc' --exclude '/sys' --exclude '/dev' --exclude '/run' \
+    --exclude '/tmp' --exclude '/mnt' --exclude '/mnt-src' --exclude '/media' \
+    --exclude '/lost+found' --exclude '/boot/efi' --exclude '/live' \
+    "$FROM/" /mnt/
+RSYNC_RC=$?
+set -e
+[ "$RSYNC_RC" -le 24 ] || die "rsync falhou (codigo $RSYNC_RC)"
+if [ -n "$SRC" ]; then umount /mnt-src 2>/dev/null || true; rmdir /mnt-src 2>/dev/null || true; fi
+
+ROOT_UUID="$(blkid -s UUID -o value "$ROOTP")"
+ESP_UUID="$(blkid -s UUID -o value "$ESP")"
+cat > /mnt/etc/fstab <<EOF
+UUID=$ROOT_UUID  /          btrfs  subvol=@,compress=zstd:1,noatime  0 1
+UUID=$ESP_UUID   /boot/efi  vfat   umask=0077                         0 1
+EOF
+echo winux > /mnt/etc/hostname
+
+for d in proc sys dev run; do mount --bind "/$d" "/mnt/$d"; done
+[ -f /etc/resolv.conf ] && cp /etc/resolv.conf /mnt/etc/resolv.conf
+
+log "gerando initramfs e tentando o driver NVIDIA"
+chroot /mnt bash -c "
+    export DEBIAN_FRONTEND=noninteractive
+    KVER=$KVER
+    mkinitramfs -o /boot/initrd.img-\$KVER \$KVER >/dev/null 2>&1
+    if [ -e /lib/modules/\$KVER/build ] && getent hosts deb.debian.org >/dev/null 2>&1; then
+        apt-get update -qq 2>/dev/null || true
+        apt-get install -y --no-install-recommends nvidia-driver nvidia-kernel-dkms 2>/dev/null || true
+        dkms autoinstall 2>/dev/null || true
+        mkinitramfs -o /boot/initrd.img-\$KVER \$KVER >/dev/null 2>&1
+    else
+        echo '   (NVIDIA sera instalado depois: apt install nvidia-driver)'
+    fi
+"
+
+log "instalando o GRUB no ESP do alvo"
+chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot/efi \
+    --bootloader-id=WINUX --no-nvram --recheck >/dev/null 2>&1 \
+    || chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot/efi \
+        --bootloader-id=WINUX --no-nvram --removable >/dev/null 2>&1
+mkdir -p /mnt/boot/efi/EFI/BOOT
+cp /mnt/boot/efi/EFI/WINUX/grubx64.efi /mnt/boot/efi/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
+
+# localiza o ESP do Windows (somente leitura)
+WIN_UUID=""
+for name in $(lsblk -rno NAME,TYPE | awk '$2=="part"{print $1}'); do
+    dev="/dev/$name"
+    [ "$dev" = "$ESP" ] && continue
+    T="$(mktemp -d)"
+    if mount -r "$dev" "$T" 2>/dev/null; then
+        if [ -f "$T/EFI/Microsoft/Boot/bootmgfw.efi" ]; then
+            WIN_UUID="$(blkid -s UUID -o value "$dev")"
+        fi
+        umount "$T"
+    fi
+    rmdir "$T" 2>/dev/null || true
+    [ -n "$WIN_UUID" ] && break
+done
+
 cat > /mnt/boot/grub/grub.cfg <<EOF
 set timeout=10
 set default=0
@@ -126,21 +171,24 @@ menuentry "Winux (alto desempenho)" {
     initrd /boot/initrd.img-$KVER
 }
 EOF
-if [ -n "$WIN_ESP" ]; then
-    WIN_UUID="$(blkid -s UUID -o value "$WIN_ESP")"
+if [ -n "$WIN_UUID" ]; then
     cat >> /mnt/boot/grub/grub.cfg <<EOF
 menuentry "Windows 11" {
-    search --set=root --fs-uuid $WIN_UUID
+    search --no-floppy --fs-uuid $WIN_UUID
     chainloader /EFI/Microsoft/Boot/bootmgfw.efi
 }
 EOF
-    echo ">> Windows localizado em $WIN_ESP (chainload)"
+    log "Windows encontrado (chainload adicionado)"
 else
-    echo ">> ATENCAO: Windows nao encontrado. Selecione via BIOS (F8)."
+    log "Windows nao localizado (use F8 na BIOS para escolher)"
 fi
 
-# --- ordem de boot: Winux como padrao ---
-chroot /mnt efibootmgr --create --disk "$TARGET" --part 1 --label "Winux" --loader '\EFI\winux\shimx64.efi' 2>/dev/null \
-    || chroot /mnt efibootmgr --create --disk "$TARGET" --part 1 --label "Winux" --loader '\EFI\WINUX\grubx64.efi'
+for d in proc sys dev run; do umount "/mnt/$d" 2>/dev/null || true; done
+umount /mnt/boot/efi 2>/dev/null || true
+umount /mnt 2>/dev/null || true
 
-echo ">> instalacao concluida. Reinicie e escolha pelo menu (ou boot F8)."
+# entrada de boot do Winux + prioridade
+efibootmgr --create --disk "$TARGET" --part 1 --label "Winux" \
+    --loader '\EFI\WINUX\grubx64.efi' >/dev/null 2>&1 || true
+
+echo ">> INSTALACAO CONCLUIDA em $TARGET. Reinicie e escolha Winux (ou F8)."

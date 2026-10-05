@@ -8,6 +8,35 @@ RFS="$ROOT/out/rootfs"
 ISO="$ROOT/iso"; OUT="$ROOT/out"
 rm -rf "$ISO"; mkdir -p "$ISO/live" "$ISO/boot/grub"
 
+# instalador dentro do live + hook de autoinstall (so se winux.autoinstall= no cmdline)
+install -m755 "$ROOT/build/scripts/70-dualboot.sh" "$RFS/usr/local/bin/winux-install"
+cat > "$RFS/usr/local/bin/winux-autoinstall.sh" <<'HOOK'
+#!/bin/sh
+for w in $(cat /proc/cmdline); do
+    case "$w" in winux.mingb=*) export WINUX_MIN_GB="${w#winux.mingb=}" ;; esac
+done
+for w in $(cat /proc/cmdline); do
+    case "$w" in
+        winux.autoinstall=*) exec /usr/local/bin/winux-install "${w#winux.autoinstall=}" --yes >/dev/ttyS0 2>&1 ;;
+    esac
+done
+HOOK
+chmod +x "$RFS/usr/local/bin/winux-autoinstall.sh"
+cat > "$RFS/etc/systemd/system/winux-autoinstall.service" <<'UNIT'
+[Unit]
+Description=Winux auto-install (cmdline winux.autoinstall=)
+After=multi-user.target
+[Service]
+Type=oneshot
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS0
+ExecStart=/usr/local/bin/winux-autoinstall.sh
+[Install]
+WantedBy=multi-user.target
+UNIT
+chroot "$RFS" systemctl enable winux-autoinstall.service >/dev/null 2>&1 || true
+
 # sistema comprimido (live)
 mksquashfs "$RFS" "$ISO/live/filesystem.squashfs" -comp xz -noappend
 

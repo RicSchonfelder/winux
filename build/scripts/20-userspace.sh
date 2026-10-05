@@ -33,7 +33,8 @@ chroot "$RFS" bash -c '
         file-roller ristretto thunar-archive-plugin \
         firmware-linux firmware-realtek \
         live-boot live-config \
-        linux-headers-amd64 build-essential dkms
+        rsync parted fdisk dosfstools btrfs-progs efibootmgr grub-efi-amd64-bin grub2-common \
+        build-essential dkms
     echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
     locale-gen
     update-locale LANG=en_US.UTF-8

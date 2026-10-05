@@ -179,4 +179,4 @@ CONFIG_ISO9660_FS=y
 CONFIG_DEVPTS_FS=y
 
 # --- NVMe builtin (root do Winux; initramfs nao depende de modulo) ---
-CONFIG_NVME=y
+CONFIG_BLK_DEV_NVME=y
