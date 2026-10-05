@@ -17,12 +17,15 @@ INITRD="$RFS/boot/initrd.img-$KVER"
 [ -f "$INITRD" ] || INITRD="$(ls "$RFS"/boot/initrd.img-* 2>/dev/null | head -1)"
 cp "$INITRD" "$ISO/live/initrd.img"
 
-# grub.cfg
+# grub.cfg (serial + vga: permite smoke-test headless no QEMU)
 cat > "$ISO/boot/grub/grub.cfg" <<EOF
 set timeout=10
 set default=0
+serial --unit=0 --speed=115200
+terminal_input serial console
+terminal_output serial console
 menuentry "Winux Live ($KVER)" {
-    linux /live/vmlinuz-$KVER boot=live quiet
+    linux /live/vmlinuz-$KVER boot=live quiet console=ttyS0
     initrd /live/initrd.img
 }
 EOF

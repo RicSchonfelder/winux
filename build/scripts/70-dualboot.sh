@@ -75,9 +75,17 @@ mount --bind /sys /mnt/sys
 mount --bind /dev /mnt/dev
 mount --bind /run /mnt/run
 
-# --- kernel + modulos + initramfs + nvidia (DKMS) dentro do alvo ---
+# --- kernel + modulos + headers p/ DKMS + initramfs + nvidia dentro do alvo ---
 cp "$ROOT/out/bzImage-$KVER" /mnt/boot/vmlinuz-$KVER
 rsync -a "$ROOT/out/modules/lib/modules/" /mnt/lib/modules/
+# headers completos do nosso kernel (DKMS precisa da arvore preparada)
+if [ -d "$ROOT/src/linux-$KVER" ]; then
+    mkdir -p /mnt/usr/src
+    rsync -a --exclude '.git' "$ROOT/src/linux-$KVER/" "/mnt/usr/src/linux-headers-$KVER/"
+    chroot /mnt bash -c "cd /usr/src/linux-headers-$KVER && make modules_prepare ARCH=x86_64 >/dev/null 2>&1 || true"
+    ln -sfn /usr/src/linux-headers-$KVER "/mnt/lib/modules/$KVER/build"
+    ln -sfn /usr/src/linux-headers-$KVER "/mnt/lib/modules/$KVER/source"
+fi
 chroot /mnt bash -c '
     export DEBIAN_FRONTEND=noninteractive
     apt-get install -y --no-install-recommends initramfs-tools nvidia-driver nvidia-kernel-dkms efibootmgr
@@ -108,14 +116,14 @@ for d in /dev/sd* /dev/nvme*; do
 done
 
 # --- grub.cfg: default=winux, timeout=10, chainload Windows ---
-cat > /mnt/boot/grub/grub.cfg <<'EOF'
+cat > /mnt/boot/grub/grub.cfg <<EOF
 set timeout=10
 set default=0
 menuentry "Winux (alto desempenho)" {
     load_video
-    set root=(hd0,2)
-    linux /boot/vmlinuz-'"$KVER"' root=UUID='"$ROOT_UUID"' rw quiet
-    initrd /boot/initrd.img-'"$KVER"'
+    search --no-floppy --fs-uuid $ROOT_UUID
+    linux /boot/vmlinuz-$KVER root=UUID=$ROOT_UUID rw quiet
+    initrd /boot/initrd.img-$KVER
 }
 EOF
 if [ -n "$WIN_ESP" ]; then

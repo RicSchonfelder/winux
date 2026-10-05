@@ -14,12 +14,16 @@ if [ ! -x "$RFS/usr/bin/apt" ]; then
         "$DEBIAN_SUITE" "$RFS" "$DEBIAN_MIRROR"
 fi
 
+# --- sources.list (escrito do host, sem problema de quoting no chroot) ---
+cat > "$RFS/etc/apt/sources.list" <<EOF
+deb $DEBIAN_MIRROR $DEBIAN_SUITE main contrib non-free-firmware
+deb $DEBIAN_MIRROR $DEBIAN_SUITE-updates main contrib non-free-firmware
+deb ${DEBIAN_MIRROR}-security $DEBIAN_SUITE-security main contrib non-free-firmware
+EOF
+
 # --- desktop + ferramentas ---
 chroot "$RFS" bash -c '
     export DEBIAN_FRONTEND=noninteractive
-    echo "deb '$DEBIAN_MIRROR' '$DEBIAN_SUITE' main contrib non-free-firmware" > /etc/apt/sources.list
-    echo "deb '$DEBIAN_MIRROR' '$DEBIAN_SUITE'-updates main contrib non-free-firmware" >> /etc/apt/sources.list
-    echo "deb '$DEBIAN_MIRROR'-security '$DEBIAN_SUITE'-security main contrib non-free-firmware" >> /etc/apt/sources.list
     apt-get update
     apt-get install -y --no-install-recommends \
         xserver-xorg xinit lightdm \

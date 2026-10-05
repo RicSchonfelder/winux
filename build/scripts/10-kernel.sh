@@ -20,12 +20,15 @@ if [ ! -d "$KDIR" ]; then
 fi
 
 cd "$KDIR"
-# --- configura: tinyconfig + fragmento + resolve deps ---
-if [ ! -f .config ] || [ "$ROOT/build/config/.config.generated" -nt .config ]; then
-    make ARCH=x86_64 tinyconfig >/dev/null
+# --- configura: defconfig (base sanada p/ desktop) + fragmento delta + resolve deps ---
+# tinyconfig nao serve: Debian/systemd/XFCE exigem PRINTK, SYSFS, PROC_FS,
+# BINFMT_ELF, CGROUPS, OVERLAY_FS, SQUASHFS etc.
+GENCFG="$ROOT/build/config/.config.generated"
+if [ ! -f .config ] || [ ! -f "$GENCFG" ] || [ "$FRAG" -nt "$GENCFG" ]; then
+    make ARCH=x86_64 defconfig >/dev/null
     scripts/kconfig/merge_config.sh -m .config "$FRAG" >/dev/null
     make ARCH=x86_64 olddefconfig >/dev/null
-    cp .config "$ROOT/build/config/.config.generated"
+    cp .config "$GENCFG"
 fi
 
 # --- compila (march=haswell via KCFLAGS) ---

@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 apt-get update
 apt-get install -y \
-    build-essential bc bison flex libssl-dev libncurses-dev \
+    build-essential bc bison flex libssl-dev libncurses-dev libelf-dev \
     cpio xz-utils zstd \
     debootstrap rsync \
     xorriso grub-pc-bin grub-efi-amd64-bin \

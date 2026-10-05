@@ -3,7 +3,7 @@
 set -e
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
-for s in 00-deps 10-kernel 20-userspace 30-desktop 40-initramfs 45-bootfiles 50-iso; do
+for s in 00-deps 10-kernel 20-userspace 30-desktop 45-bootfiles 40-initramfs 50-iso; do
     echo "==================== $s ===================="
     "$ROOT/build/scripts/$s.sh"
 done

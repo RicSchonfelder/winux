@@ -12,15 +12,9 @@ if [ ! -d "$RFS/usr/share/themes/Chicago95" ]; then
     cp -a /tmp/chicago95/Icons/Chicago95 "$RFS/usr/share/icons/"
 fi
 
-# --- xorg com driver NVIDIA ---
-mkdir -p "$RFS/etc/X11/xorg.conf.d"
-cat > "$RFS/etc/X11/xorg.conf.d/20-nvidia.conf" <<'EOF'
-Section "Device"
-    Identifier "NVIDIA GTX 1060"
-    Driver     "nvidia"
-    Option     "NoLogo" "true"
-EndSection
-EOF
+# --- NVIDIA: o pacote nvidia-driver (instalado na Fase D, via DKMS) ja
+# fornece /usr/share/X11/xorg.conf.d/10-nvidia.conf. Nao forcar Driver
+# "nvidia" no live (sem modulo o X nao sobe).
 
 # --- lightdm: login com tema padrao ---
 sed -i 's/^#autologin-user=.*/autologin-user=winux/; s/^#autologin-session=.*/autologin-session=xfce/' \

@@ -1,7 +1,9 @@
 # ============================================================
-#  Winux — fragmento de config do kernel p/ DESKTOP HASWELL
+#  Winux — DELTA de config do kernel p/ DESKTOP HASWELL
 #  (Intel Core i7-4771, 4C/8T, GTX 1060 6GB, 24GB RAM)
-#  Metodo: make tinyconfig + merge deste fragmento + olddefconfig
+#  Metodo: make defconfig (base sanada p/ desktop) + merge deste
+#  fragmento + olddefconfig. tinyconfig NAO serve p/ sistema
+#  Debian/systemd/XFCE completo (falta PRINTK/SYSFS/ELF/CGROUPS).
 #  Objetivo: ALTO DESEMPENHO (governor performance, preempt,
 #  march=haswell via KCFLAGS) com hardware desta maquina.
 # ============================================================
@@ -75,6 +77,9 @@ CONFIG_UNIX98_PTYS=y
 CONFIG_VT=y
 CONFIG_VT_CONSOLE=y
 CONFIG_DUMMY_CONSOLE=y
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_PCI=y
 
 # --- Framebuffer EFI (console de boot) ---
 CONFIG_FB=y
@@ -165,3 +170,13 @@ CONFIG_IO_URING=y
 # --- UEFI ---
 CONFIG_EFI=y
 CONFIG_EFI_STUB=y
+
+# --- Live/overlay (ISO live-boot + persistencia) ---
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_OVERLAY_FS=y
+CONFIG_ISO9660_FS=y
+CONFIG_DEVPTS_FS=y
+
+# --- NVMe builtin (root do Winux; initramfs nao depende de modulo) ---
+CONFIG_NVME=y
