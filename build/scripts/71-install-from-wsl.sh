@@ -12,6 +12,9 @@
 # instalador ainda exige tamanho ~480GB (o WDC NVMe), o que exclui qualquer
 # outro dispositivo. O disco do Windows é literalmente inalcançável daqui.
 set -e
+# PATH limpo: o PATH herdado do Windows aponta p/ D: (que some quando o disco
+# e anexado), o que pode deixar comandos basicos introuveis.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 ROOT=/root/winux
 . "$ROOT/build/config/build.conf"
@@ -35,7 +38,7 @@ for d in /dev/nvme0n1 /dev/nvme1n1 /dev/nvme0n2 /dev/sd[a-z]; do
     lsblk -no MOUNTPOINT "$d" 2>/dev/null | grep -q . && continue
     TARGET="$d"; SZ="$SZ"; break
 done
-[ -n "$TARGET" ] || die "disco alvo ~480GB nao encontrado (anexou o PHYSICALDRIVE3?)"
+[ -n "$TARGET" ] || { lsblk -dno NAME,SIZE,MODEL >> "$LOG" 2>&1; die "disco alvo ~480GB nao encontrado (dispositivos acima no log)"; }
 log "alvo detectado: $TARGET ($(( SZ / 1000000000 )) GB)"
 
 # confirma que nao e um disco do windows (o do windows e SATA, o alvo e NVMe)
@@ -47,6 +50,12 @@ log "garantindo fstab/hostname no rootfs"
 ROOT_UUID_PRE=; ESP_UUID_PRE=
 
 # --- 1) particiona ---
+# cleanup de execucoes anteriores (idempotencia)
+umount /mnt/boot/efi 2>/dev/null || true
+for d in proc sys dev; do umount "/mnt/$d" 2>/dev/null || true; done
+umount /mnt 2>/dev/null || true
+umount /mnt-src 2>/dev/null || true
+
 log "particionando (DESTRUTIVO no alvo apenas)"
 wipefs -a "$TARGET" 2>/dev/null || true
 sfdisk "$TARGET" <<'SFDISK' || true
@@ -72,12 +81,12 @@ log "formatando"
 mkfs.vfat -F32 -n WINUX-ESP "$ESP"
 mkfs.btrfs -f -L WINUX "$ROOTP"
 
-# --- 3) subvol @ + montar ---
-log "criando subvol @"
-mount -t btrfs "$ROOTP" /mnt
-btrfs subvolume create /mnt/@
-umount /mnt
-mount -t btrfs -o subvol=@,compress=zstd:1,noatime "$ROOTP" /mnt
+# --- 3) montar root (TOP-LEVEL do btrfs, sem subvolume) ---
+# Usamos o top-level (nao um subvolume @) de proposito: o initramfs do Debian
+# monta a raiz pelo UUID sem honoured subvol=, e um subvolume faz o boot cair
+# em "No init found". Para um SO unico, o top-level e o caminho simples e correto.
+log "montando root (top-level btrfs)"
+mount -t btrfs -o compress=zstd:1,noatime "$ROOTP" /mnt
 mkdir -p /mnt/boot/efi
 mount "$ESP" /mnt/boot/efi
 
@@ -93,16 +102,19 @@ rsync -aHAX --numeric-ids \
 ROOT_UUID="$(blkid -s UUID -o value "$ROOTP")"
 ESP_UUID="$(blkid -s UUID -o value "$ESP")"
 cat > /mnt/etc/fstab <<EOF
-UUID=$ROOT_UUID  /          btrfs  subvol=@,compress=zstd:1,noatime  0 1
-UUID=$ESP_UUID   /boot/efi  vfat   umask=0077                         0 1
+UUID=$ROOT_UUID  /          btrfs  compress=zstd:1,noatime          0 1
+UUID=$ESP_UUID   /boot/efi  vfat   umask=0077                       0 1
 EOF
 echo winux > /mnt/etc/hostname
 
 # --- 6) binds p/ chroot ---
-for d in proc sys dev; do mount --bind "/$d" "/mnt/$d"; done
+mkdir -p /mnt/proc /mnt/sys /mnt/dev /mnt/run
+for d in proc sys dev run; do mount --bind "/$d" "/mnt/$d"; done
 
-# --- 7) GRUB (dentro do chroot, usa o grub do proprio sistema) ---
-log "instalando o GRUB"
+# --- 7) initramfs + GRUB (dentro do chroot, usa o grub do proprio sistema) ---
+log "gerando initramfs e instalando o GRUB"
+# regenerate initramfs para o sistema instalado (root=UUID vem do grub.cfg)
+chroot /mnt /sbin/mkinitramfs -o "/boot/initrd.img-$KVER" "$KVER" >/dev/null 2>&1 || log "aviso: regeneracao do initramfs falhou (usando o do build)"
 chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot/efi \
     --bootloader-id=WINUX --no-nvram --recheck \
     || chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot/efi \
@@ -110,15 +122,26 @@ chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot/efi \
 mkdir -p /mnt/boot/efi/EFI/BOOT
 cp /mnt/boot/efi/EFI/WINUX/grubx64.efi /mnt/boot/efi/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
 
+# grub.cfg de ENCADEAMENTO na ESP: o core (carregado da ESP) procura o prefix
+# /boot/grub NELA, mas os modulos/config estao na particao root (btrfs, separada).
+# Este cfg minimo busca a root por UUID, aponta o prefix e le o grub.cfg real.
+for D in /mnt/boot/efi/boot/grub /mnt/boot/efi/EFI/BOOT /mnt/boot/efi/EFI/WINUX; do
+    mkdir -p "$D"
+    cat > "$D/grub.cfg" <<EOF
+search --no-floppy --fs-uuid $ROOT_UUID --set=root
+set prefix=(\$root)/boot/grub
+configfile \$prefix/grub.cfg
+EOF
+done
+
 # --- 8) grub.cfg: Winux padrao (10s) + Windows chainload (por busca de arquivo,
 #     nao precisa do UUID do ESP do Windows — que nao e visivel via WSL) ---
 cat > /mnt/boot/grub/grub.cfg <<EOF
 set timeout=10
 set default=0
 menuentry "Winux (alto desempenho)" {
-    load_video
-    search --no-floppy --fs-uuid $ROOT_UUID
-    linux /boot/vmlinuz-$KVER root=UUID=$ROOT_UUID rw quiet
+    search --no-floppy --fs-uuid $ROOT_UUID --set=root
+    linux /boot/vmlinuz-$KVER root=UUID=$ROOT_UUID rootfstype=btrfs rw console=tty0 console=ttyS0
     initrd /boot/initrd.img-$KVER
 }
 menuentry "Windows 11" {
