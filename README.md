@@ -60,5 +60,12 @@ build/config/    build.conf + fragmento do kernel (haswell-desktop)
 build/scripts/   pipeline de build + instalador dual-boot
 overlay/         arquivos do sistema versionados
 overlay-initrd/  (reservado) init custom
+skills/          skills do OpenCode (catálogo operacional)
 src/ out/ iso/ artifacts/   (gerados no build)
 ```
+
+## Ajustes versionados
+
+| Ajuste | Onde | O que faz |
+|--------|------|-----------|
+| Ícone minimalista do AnyDesk na bandeja | `overlay/opt/anydesk-tray-icon/` | tira o retângulo vermelho do ícone junto ao relógio (só o desenho branco), via `LD_PRELOAD` — sem tocar em nada de `/usr`. Skill: [`skills/anydesk-tray-icon`](skills/anydesk-tray-icon/SKILL.md) |
